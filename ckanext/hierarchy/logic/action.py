@@ -2,6 +2,7 @@ import logging
 
 import ckan.plugins as p
 import ckan.logic as logic
+import ckan.model as model
 from ckanext.hierarchy.model import GroupTreeNode
 
 log = logging.getLogger(__name__)
@@ -94,17 +95,28 @@ def _group_tree_branch(root_group, highlight_group_name=None, type='group'):
     root_node = nodes[root_group.id] = GroupTreeNode(
         {'id': root_group.id,
          'name': root_group.name,
-         'title': root_group.title})
+         'title': root_group.title,
+         'package_count': len(root_group.packages())
+         })
     if root_group.name == highlight_group_name:
         nodes[root_group.id].highlight()
         highlight_group_name = None
+    child_total_pkg = root_node['package_count']
     for group_id, group_name, group_title, parent_id in \
             root_group.get_children_group_hierarchy(type=type):
+        pkg_by_group = model.Session.query(model.Group).filter(model.Group.id == group_id).one()
+        package_count = len(pkg_by_group.packages())
+        # total count of package for root node
+        child_total_pkg += package_count 
         node = GroupTreeNode({'id': group_id,
                               'name': group_name,
-                              'title': group_title})
+                              'title': group_title,
+                              'package_count': package_count
+                              })
         nodes[parent_id].add_child_node(node)
         if highlight_group_name and group_name == highlight_group_name:
             node.highlight()
         nodes[group_id] = node
+    # update pacakge count for root node
+    root_node['package_count'] = child_total_pkg
     return root_node
