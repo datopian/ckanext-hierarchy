@@ -9,7 +9,7 @@
         {%if group_type == 'organization' %}
           {{ form.checkbox('include_children', label="Include Sub-Organizations", checked=(h.is_include_children_selected(fields)), value=True, error=error) }}
           {% else %}
-          {{ form.checkbox('include_children', label="Include Sub-Groups", checked=(h.is_include_children_selected(fields)), value=True, error=error) }}
+          {{ form.checkbox('include_children', label=_('Include Sub-Groups'), checked=(h.is_include_children_selected(fields)), value=True, error=error) }}
         {% endif %}
 
       {% endif %}
