@@ -3,6 +3,7 @@ import logging
 import ckan.plugins as p
 import ckan.logic as logic
 from ckanext.hierarchy.model import GroupTreeNode
+import ckan.authz as authz
 
 log = logging.getLogger(__name__)
 _get_or_bust = logic.get_or_bust
@@ -10,15 +11,35 @@ _get_or_bust = logic.get_or_bust
 
 @logic.side_effect_free
 def group_tree(context, data_dict):
-    '''Returns the full group tree hierarchy.
-
-    :returns: list of top-level GroupTreeNodes
-    '''
     model = _get_or_bust(context, 'model')
     group_type = data_dict.get('type', 'group')
-    return [_group_tree_branch(group, type=group_type)
-            for group in model.Group.get_top_level_groups(type=group_type)]
-
+    
+    # Check for sysadmin status
+    is_sysadmin = False
+    user_capacities = {}
+    auth_user_obj = context.get('auth_user_obj')
+    user = context.get('user')
+    
+    if user:
+        log.error("Enters here as user")
+        if authz.is_sysadmin(user):
+            is_sysadmin = True
+        else:
+            # Only query capacities if not sysadmin
+            user_id = auth_user_obj.id
+            members = model.Session.query(model.Member).filter(
+                model.Member.table_name == 'user',
+                model.Member.table_id == user_id,
+                model.Member.state == 'active'
+            ).all()
+            user_capacities = {m.group_id: m.capacity for m in members}
+    
+    return [_group_tree_branch(
+        group, 
+        type=group_type,
+        user_capacities=user_capacities,
+        is_sysadmin=is_sysadmin
+    ) for group in model.Group.get_top_level_groups(type=group_type)]
 
 @logic.side_effect_free
 def group_tree_section(context, data_dict):
@@ -30,9 +51,27 @@ def group_tree_section(context, data_dict):
     :param include_siblingss: if false, excludes given group siblings
     :returns: the top GroupTreeNode of the tree section
     '''
-    group_name_or_id = _get_or_bust(data_dict, 'id')
     model = _get_or_bust(context, 'model')
+    group_name_or_id = _get_or_bust(data_dict, 'id')
     group = model.Group.get(group_name_or_id)
+    
+    # Check for sysadmin status
+    is_sysadmin = False
+    user_capacities = {}
+    auth_user_obj = context.get('auth_user_obj')
+    user = context.get('user')
+    if user:
+        if authz.is_sysadmin(user):
+            is_sysadmin = True
+        else:
+            user_id = auth_user_obj.id
+            members = model.Session.query(model.Member).filter(
+                model.Member.table_name == 'user',
+                model.Member.table_id == user_id,
+                model.Member.state == 'active'
+            ).all()
+            user_capacities = {m.group_id: m.capacity for m in members}
+    
     if group is None:
         raise p.toolkit.ObjectNotFound
     group_type = data_dict.get('type', 'group')
@@ -49,19 +88,35 @@ def group_tree_section(context, data_dict):
                       or [group])[0]
     else:
         root_group = group
+    
     if include_siblings or root_group == group:
-        return _group_tree_branch(root_group, highlight_group_name=group.name,
-                                  type=group_type)
+        return _group_tree_branch(
+            root_group, 
+            highlight_group_name=group.name,
+            type=group_type,
+            user_capacities=user_capacities,
+            is_sysadmin=is_sysadmin
+        )
     else:
-        section_subtree = _group_tree_branch(group,
-                                             highlight_group_name=group.name,
-                                             type=group_type)
+        section_subtree = _group_tree_branch(
+            group,
+            highlight_group_name=group.name,
+            type=group_type,
+            user_capacities=user_capacities,
+            is_sysadmin=is_sysadmin
+        )
         return _nest_group_tree_list(
             group.get_parent_group_hierarchy(type=group_type),
-            section_subtree)
+            section_subtree,
+            user_capacities=user_capacities,
+            is_sysadmin=is_sysadmin
+        )
 
 
-def _nest_group_tree_list(group_tree_list, group_tree_leaf):
+
+
+def _nest_group_tree_list(group_tree_list, group_tree_leaf, 
+                         user_capacities=None, is_sysadmin=False):
     '''Returns a tree branch composed by nesting the groups in the list.
 
     :param group_tree_list: list of groups to build a tree, first is root
@@ -69,42 +124,73 @@ def _nest_group_tree_list(group_tree_list, group_tree_leaf):
     '''
     root_node = None
     last_node = None
+    
     for group in group_tree_list:
-        node = GroupTreeNode(
-            {'id': group.id,
-             'name': group.name,
-             'title': group.title})
+        node_dict = {
+            'id': group.id,
+            'name': group.name,
+            'title': group.title,
+            'type': group.type
+        }
+        
+        # Set capacity for sysadmin
+        if is_sysadmin:
+            node_dict['capacity'] = 'admin'
+        else:
+            node_dict['capacity'] = user_capacities.get(group.id, 'member')
+            
+        node = GroupTreeNode(node_dict)
+        
         if not root_node:
             root_node = last_node = node
         else:
             last_node.add_child_node(node)
             last_node = node
+            
     last_node.add_child_node(group_tree_leaf)
     return root_node
 
 
-def _group_tree_branch(root_group, highlight_group_name=None, type='group'):
+def _group_tree_branch(root_group, highlight_group_name=None, type='group', user_capacities=None, is_sysadmin=False):
     '''Returns a branch of the group tree hierarchy, rooted in the given group.
 
     :param root_group_id: group object at the top of the part of the tree
     :param highlight_group_name: group name that is to be flagged 'highlighted'
     :returns: the top GroupTreeNode of the tree
     '''
-    nodes = {}  # group_id: GroupTreeNode()
-    root_node = nodes[root_group.id] = GroupTreeNode(
-        {'id': root_group.id,
-         'name': root_group.name,
-         'title': root_group.title})
+    nodes = {}
+    root_dict = {
+        'id': root_group.id,
+        'name': root_group.name,
+        'title': root_group.title,
+        'type': root_group.type
+    }
+    if is_sysadmin:
+        root_dict['capacity'] = 'admin'
+    else:
+        root_dict['capacity'] = user_capacities.get(root_group.id)
+    root_node = nodes[root_group.id] = GroupTreeNode(root_dict)
     if root_group.name == highlight_group_name:
         nodes[root_group.id].highlight()
         highlight_group_name = None
-    for group_id, group_name, group_title, parent_id in \
-            root_group.get_children_group_hierarchy(type=type):
-        node = GroupTreeNode({'id': group_id,
-                              'name': group_name,
-                              'title': group_title})
+    for group_id, group_name, group_title, parent_id in root_group.get_children_group_hierarchy(type=type):
+        node_dict = {
+            'id': group_id,
+            'name': group_name,
+            'title': group_title,
+            'type': type
+        }
+        if is_sysadmin:
+            node_dict['capacity'] = 'admin'
+        else:
+            capacity = user_capacities.get(group_id)
+            if capacity is None:
+                capacity = root_dict['capacity']
+            node_dict['capacity'] = capacity
+        node = GroupTreeNode(node_dict)
         nodes[parent_id].add_child_node(node)
         if highlight_group_name and group_name == highlight_group_name:
             node.highlight()
         nodes[group_id] = node
     return root_node
+
