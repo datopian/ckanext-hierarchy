@@ -113,8 +113,6 @@ def group_tree_section(context, data_dict):
         )
 
 
-
-
 def _nest_group_tree_list(group_tree_list, group_tree_leaf, 
                          user_capacities=None, is_sysadmin=False):
     '''Returns a tree branch composed by nesting the groups in the list.
@@ -184,8 +182,13 @@ def _group_tree_branch(root_group, highlight_group_name=None, type='group', user
             node_dict['capacity'] = 'admin'
         else:
             capacity = user_capacities.get(group_id)
+
+            parent_node = nodes[parent_id]
+            parent_capacity = parent_node.get('capacity')
+
             if capacity is None:
-                capacity = root_dict['capacity']
+                capacity = parent_capacity or root_dict["capacity"]
+
             node_dict['capacity'] = capacity
         node = GroupTreeNode(node_dict)
         nodes[parent_id].add_child_node(node)
@@ -193,4 +196,3 @@ def _group_tree_branch(root_group, highlight_group_name=None, type='group', user
             node.highlight()
         nodes[group_id] = node
     return root_node
-
